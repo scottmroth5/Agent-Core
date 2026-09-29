@@ -2,7 +2,12 @@
 
 ## Purpose
 Generic agent infrastructure shared by Job-Agent and Health-Review.
-Consumed as a local npm dependency (npm install ../Agent-Core).
+Consumed by Job-Agent and Health-Review as a git dependency pinned to version tags:
+"agent-core": "github:scottmroth5/Agent-Core#semver:^<version>". This repo is public.
+
+## Releasing
+Bump "version" in package.json, commit, then tag and push: git tag v<version> && git push origin main --tags.
+Consumers pick it up with npm update agent-core. To test an unreleased change, run npm link ../Agent-Core in the consumer.
 
 ## Structure
 /src/claude.js       API client, retries, model tiering, prompt caching

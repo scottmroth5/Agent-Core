@@ -1,6 +1,6 @@
 {
   "name": "@scottmroth5/agent-core",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Shared agent infrastructure for Job-Agent and Health-Review-Agent",
   "type": "module",
   "main": "src/index.js",

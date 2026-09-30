@@ -27,6 +27,11 @@ test('uses per-model cache read rates', () => {
   near(costFromUsage('claude-fable-5-1', usage), 0.25);
 });
 
+test('prices dated snapshot IDs like their alias', () => {
+  const usage = { input_tokens: 1_000_000, output_tokens: 0 };
+  near(costFromUsage('claude-haiku-4-5-20251001', usage), 1);
+});
+
 test('returns null for an unknown model or missing usage', () => {
   assert.equal(costFromUsage('claude-unknown-9', { input_tokens: 10 }), null);
   assert.equal(costFromUsage('claude-haiku-4-5', undefined), null);

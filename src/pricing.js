@@ -17,7 +17,8 @@ const RATES = {
  * @returns {number|null}
  */
 export function costFromUsage(model, usage) {
-  const r = RATES[model];
+  // Responses can report a dated snapshot ID (e.g. claude-haiku-4-5-20251001) for an alias.
+  const r = RATES[model] ?? RATES[String(model ?? '').replace(/-\d{8}$/, '')];
   if (!r || !usage) return null;
   const cacheWrite = usage.cache_creation_input_tokens || 0;
   // The breakdown by TTL is present on current API versions; without it, treat writes as 5-minute.

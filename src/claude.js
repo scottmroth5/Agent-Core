@@ -104,7 +104,7 @@ export function createClaude({ apiKey, client, maxRetries = 3, timeoutMs } = {})
           cacheRead: usage.cache_read_input_tokens ?? 0,
           cacheWrite: usage.cache_creation_input_tokens ?? 0,
         },
-        costUsd: costFromUsage(response.model ?? model, usage),
+        costUsd: costFromUsage(response.model ?? model, usage) ?? costFromUsage(model, usage),
         model: response.model ?? model,
         id: response.id,
       };

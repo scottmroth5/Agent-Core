@@ -135,6 +135,13 @@ test('traces metadata only, never prompt or response text', async () => {
   assert.equal(trace.calls[0].error, null);
 });
 
+test('prices a response whose model ID is a dated snapshot of the requested alias', async () => {
+  const claude = createClaude({ client: fakeClient(response({ model: 'claude-haiku-4-5-20251001' })) });
+  const result = await claude.send({ model: 'claude-haiku-4-5', maxTokens: 50, prompt: 'x' });
+  assert.equal(result.model, 'claude-haiku-4-5-20251001');
+  assert.ok(Math.abs(result.costUsd - 0.0002) < 1e-12); // 100*1 + 20*5 = 200 per million
+});
+
 test('reports null cost for a model without pricing', async () => {
   const claude = createClaude({ client: fakeClient(response({ model: 'claude-unknown-9' })) });
   const result = await claude.send({ model: 'claude-unknown-9', maxTokens: 50, prompt: 'x' });

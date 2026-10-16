@@ -2,20 +2,22 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { createClaude, ClaudeTruncatedError, ClaudeRefusalError } from '../src/index.js';
 
-// Fake SDK client: records every request and answers with the given response (or throws it).
+// Fake SDK client: records every request (and which endpoint took it) and answers with the given response (or throws it).
 function fakeClient(respond) {
   const requests = [];
-  return {
-    requests,
-    messages: {
-      create: async (params) => {
-        requests.push(params);
-        const r = typeof respond === 'function' ? respond(params) : respond;
-        if (r instanceof Error) throw r;
-        return r;
-      },
-    },
+  const endpoints = [];
+  const answer = (endpoint, params) => {
+    requests.push(structuredClone(params));
+    endpoints.push(endpoint);
+    const r = typeof respond === 'function' ? respond(params, requests.length) : respond;
+    if (r instanceof Error) throw r;
+    return r;
   };
+  const api = (prefix) => ({
+    create: async (params) => answer(`${prefix}create`, params),
+    stream: (params) => ({ finalMessage: async () => answer(`${prefix}stream`, params) }),
+  });
+  return { requests, endpoints, messages: api(''), beta: { messages: api('beta.') } };
 }
 
 function response({ text = 'hello', stop_reason = 'end_turn', model = 'claude-haiku-4-5', usage, stop_details } = {}) {
@@ -49,7 +51,7 @@ test('sends the system prompt as one cached block and returns text, usage and co
   assert.equal(result.text, 'hello');
   assert.equal(result.data, null);
   assert.equal(result.stopReason, 'end_turn');
-  assert.deepEqual(result.usage, { input: 100, output: 20, cacheRead: 5000, cacheWrite: 0 });
+  assert.deepEqual(result.usage, { input: 100, output: 20, cacheRead: 5000, cacheWrite: 0, webSearches: 0 });
   // 100*1 + 20*5 + 5000*0.1 = 700 per million
   assert.ok(Math.abs(result.costUsd - 0.0007) < 1e-12);
 });
@@ -59,7 +61,7 @@ test('omits system when none is given and accepts a full messages list', async (
   const messages = [{ role: 'user', content: 'a' }, { role: 'assistant', content: 'b' }, { role: 'user', content: 'c' }];
   await createClaude({ client }).send({ model: 'claude-haiku-4-5', maxTokens: 10, messages });
   assert.equal(client.requests[0].system, undefined);
-  assert.equal(client.requests[0].messages, messages);
+  assert.deepEqual(client.requests[0].messages, messages);
 });
 
 test('schema sets output_config.format and parses the JSON response', async () => {
@@ -146,4 +148,42 @@ test('reports null cost for a model without pricing', async () => {
   const claude = createClaude({ client: fakeClient(response({ model: 'claude-unknown-9' })) });
   const result = await claude.send({ model: 'claude-unknown-9', maxTokens: 50, prompt: 'x' });
   assert.equal(result.costUsd, null);
+});
+
+test('passes tools through, streams when asked, and uses the beta endpoint only with betas', async () => {
+  const tools = [{ type: 'web_search_20260209', name: 'web_search', max_uses: 3 }];
+  const client = fakeClient(response());
+  const claude = createClaude({ client });
+  await claude.send({ model: 'claude-haiku-4-5', maxTokens: 50, prompt: 'x', tools, stream: true });
+  await claude.send({ model: 'claude-haiku-4-5', maxTokens: 50, prompt: 'x', betas: ['server-side-fallback-2026-07-01'], fallbacks: 'default' });
+  await claude.send({ model: 'claude-haiku-4-5', maxTokens: 50, prompt: 'x' });
+  assert.deepEqual(client.endpoints, ['stream', 'beta.create', 'create']);
+  assert.deepEqual(client.requests[0].tools, tools);
+  assert.deepEqual([client.requests[1].betas, client.requests[1].fallbacks], [['server-side-fallback-2026-07-01'], 'default']);
+  for (const k of ['tools', 'betas', 'fallbacks']) assert.equal(client.requests[2][k], undefined, k);
+});
+
+test('resumes pause_turn with the paused content, then sums usage, searches, and cost across the responses', async () => {
+  const usage = { input_tokens: 1000, output_tokens: 100, server_tool_use: { web_search_requests: 2 } };
+  const paused = { ...response({ model: 'claude-sonnet-5-5', usage }), stop_reason: 'pause_turn', content: [{ type: 'server_tool_use', id: 's1', name: 'web_search', input: {} }] };
+  const done = response({ model: 'claude-sonnet-5-5', text: 'final', usage: { input_tokens: 500, output_tokens: 50, server_tool_use: { web_search_requests: 1 } } });
+  const client = fakeClient((params, n) => (n === 1 ? paused : done));
+  const trace = fakeTrace();
+  const result = await createClaude({ client }).send({ model: 'claude-sonnet-5-5', maxTokens: 50, prompt: 'x', trace });
+
+  assert.equal(client.requests.length, 2);
+  assert.deepEqual(client.requests[1].messages, [{ role: 'user', content: 'x' }, { role: 'assistant', content: paused.content }]);
+  assert.deepEqual(result.content.map((b) => b.type), ['server_tool_use', 'text']);
+  assert.equal(result.text, 'final');
+  assert.deepEqual(result.usage, { input: 1500, output: 150, cacheRead: 0, cacheWrite: 0, webSearches: 3 });
+  // tokens: 1500*2 + 150*10 = 4500 per million; searches: 3 * $0.01
+  assert.ok(Math.abs(result.costUsd - (0.0045 + 0.03)) < 1e-12);
+  assert.equal(trace.calls.length, 1, 'one traced call for the whole resumed turn');
+});
+
+test('gives up after maxContinuations pauses', async () => {
+  const paused = { ...response(), stop_reason: 'pause_turn', content: [] };
+  const client = fakeClient(paused);
+  await assert.rejects(createClaude({ client }).send({ model: 'claude-haiku-4-5', maxTokens: 50, prompt: 'x', maxContinuations: 2 }), /paused the turn more than 2 times/);
+  assert.equal(client.requests.length, 3);
 });

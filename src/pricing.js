@@ -8,12 +8,14 @@ const RATES = {
   'claude-opus-5-5': { input: 4, output: 20, cacheWrite5m: 5, cacheWrite1h: 8, cacheRead: 0.2 },
   'claude-fable-5-1': { input: 10, output: 50, cacheWrite5m: 12.5, cacheWrite1h: 20, cacheRead: 0.25 },
 };
+// Web search: $10 per 1,000 searches, on top of tokens. Web fetch has no per-request fee.
+const WEB_SEARCH_USD = 0.01;
 
 /**
  * Estimates the USD cost of one Messages API response from its usage block.
  * Returns null for a model with no rates, rather than guessing.
  * @param {string} model
- * @param {object} usage  raw API usage (input_tokens, output_tokens, cache_* fields)
+ * @param {object} usage  raw API usage (input_tokens, output_tokens, cache_* fields, server_tool_use)
  * @returns {number|null}
  */
 export function costFromUsage(model, usage) {
@@ -30,5 +32,5 @@ export function costFromUsage(model, usage) {
     (usage.cache_read_input_tokens || 0) * r.cacheRead +
     write5m * r.cacheWrite5m +
     write1h * r.cacheWrite1h;
-  return dollars / 1_000_000;
+  return dollars / 1_000_000 + (usage.server_tool_use?.web_search_requests || 0) * WEB_SEARCH_USD;
 }

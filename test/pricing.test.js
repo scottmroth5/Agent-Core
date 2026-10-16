@@ -32,6 +32,11 @@ test('prices dated snapshot IDs like their alias', () => {
   near(costFromUsage('claude-haiku-4-5-20251001', usage), 1);
 });
 
+test('adds $10 per 1,000 web searches on top of tokens', () => {
+  const usage = { input_tokens: 1_000_000, output_tokens: 0, server_tool_use: { web_search_requests: 12, web_fetch_requests: 4 } };
+  near(costFromUsage('claude-opus-5-5', usage), 4 + 0.12);
+});
+
 test('returns null for an unknown model or missing usage', () => {
   assert.equal(costFromUsage('claude-unknown-9', { input_tokens: 10 }), null);
   assert.equal(costFromUsage('claude-haiku-4-5', undefined), null);

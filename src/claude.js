@@ -33,7 +33,7 @@ export class ClaudeRefusalError extends Error {
  *
  * @param {object} [options]
  * @param {string} [options.apiKey]      defaults to ANTHROPIC_API_KEY via the SDK
- * @param {object} [options.client]      pre-built client exposing messages.create (used by tests)
+ * @param {object} [options.client]      pre-built client exposing messages.create/stream and beta.messages (used by tests)
  * @param {number} [options.maxRetries]  SDK retry count, default 3
  * @param {number} [options.timeoutMs]   per-request timeout in milliseconds, SDK default when omitted
  * @returns {{ send: (opts: SendOptions) => Promise<SendResult> }}
@@ -47,14 +47,20 @@ export class ClaudeRefusalError extends Error {
  * @property {object} [schema]           JSON Schema; the response is constrained to it and parsed into data
  * @property {object} [thinking]         passed through unchanged (rules differ per model)
  * @property {string} [effort]           output_config.effort, passed through unchanged
+ * @property {Array}  [tools]            tool definitions, passed through (e.g. server tools such as web search)
+ * @property {boolean} [stream]          stream the response and wait for the final message (long outputs)
+ * @property {string[]} [betas]          beta flags; when given, the beta Messages endpoint is used
+ * @property {any}    [fallbacks]        server-side refusal fallbacks, passed through (needs its beta flag)
+ * @property {number} [maxContinuations] how many times to resume a pause_turn response, default 5
  * @property {object} [trace]            a run from createTracer().startRun()
  * @property {string} [label]            short call name recorded in the trace
  *
  * @typedef {object} SendResult
- * @property {string} text
+ * @property {string} text               every text block, joined with newlines
+ * @property {Array}  content            every content block, across resumed pause_turn responses
  * @property {any}    data               parsed JSON when schema was given, else null
  * @property {string} stopReason
- * @property {{input:number, output:number, cacheRead:number, cacheWrite:number}} usage
+ * @property {{input:number, output:number, cacheRead:number, cacheWrite:number, webSearches:number}} usage
  * @property {number|null} costUsd      null when the model has no pricing entry
  * @property {string} model
  * @property {string} id
@@ -67,7 +73,7 @@ export function createClaude({ apiKey, client, maxRetries = 3, timeoutMs } = {})
   };
 
   async function send(opts) {
-    const { model, maxTokens, system, prompt, messages, schema, thinking, effort, trace, label } = opts ?? {};
+    const { model, maxTokens, system, prompt, messages, schema, thinking, effort, tools, stream, betas, fallbacks, maxContinuations = 5, trace, label } = opts ?? {};
     if (!model) throw new TypeError('send: model is required');
     if (!maxTokens) throw new TypeError('send: maxTokens is required');
     if (!prompt === !messages) throw new TypeError('send: pass exactly one of prompt or messages');
@@ -84,32 +90,51 @@ export function createClaude({ apiKey, client, maxRetries = 3, timeoutMs } = {})
       if (effort) params.output_config.effort = effort;
       if (schema) params.output_config.format = { type: 'json_schema', schema };
     }
+    if (tools?.length) params.tools = tools;
+    if (fallbacks) params.fallbacks = fallbacks;
+    if (betas?.length) params.betas = betas;
+
+    const request = (p) => {
+      const api = betas?.length ? getApi().beta.messages : getApi().messages;
+      return stream ? api.stream(p).finalMessage() : api.create(p);
+    };
 
     const started = Date.now();
     let result = null;
     try {
-      const response = await getApi().messages.create(params);
-      const usage = response.usage ?? {};
+      // Server tools (web search) can pause a long turn; resend it with the paused content and the API resumes.
+      const responses = [await request(params)];
+      while (responses.at(-1).stop_reason === 'pause_turn' && responses.length <= maxContinuations) {
+        params.messages = [...params.messages, { role: 'assistant', content: responses.at(-1).content }];
+        responses.push(await request(params));
+      }
+      const last = responses.at(-1);
+      const content = responses.flatMap((r) => r.content ?? []);
+      const sum = (pick) => responses.reduce((n, r) => n + (pick(r.usage ?? {}) || 0), 0);
+      const costs = responses.map((r) => costFromUsage(r.model ?? model, r.usage) ?? costFromUsage(model, r.usage));
       result = {
-        text: (response.content ?? [])
+        text: content
           .filter((b) => b.type === 'text')
           .map((b) => b.text)
           .join('\n')
           .trim(),
+        content,
         data: null,
-        stopReason: response.stop_reason,
+        stopReason: last.stop_reason,
         usage: {
-          input: usage.input_tokens ?? 0,
-          output: usage.output_tokens ?? 0,
-          cacheRead: usage.cache_read_input_tokens ?? 0,
-          cacheWrite: usage.cache_creation_input_tokens ?? 0,
+          input: sum((u) => u.input_tokens),
+          output: sum((u) => u.output_tokens),
+          cacheRead: sum((u) => u.cache_read_input_tokens),
+          cacheWrite: sum((u) => u.cache_creation_input_tokens),
+          webSearches: sum((u) => u.server_tool_use?.web_search_requests),
         },
-        costUsd: costFromUsage(response.model ?? model, usage) ?? costFromUsage(model, usage),
-        model: response.model ?? model,
-        id: response.id,
+        costUsd: costs.some((c) => c === null) ? null : costs.reduce((a, b) => a + b, 0),
+        model: last.model ?? model,
+        id: last.id,
       };
-      if (response.stop_reason === 'max_tokens') throw new ClaudeTruncatedError(result);
-      if (response.stop_reason === 'refusal') throw new ClaudeRefusalError(result, response.stop_details);
+      if (last.stop_reason === 'max_tokens') throw new ClaudeTruncatedError(result);
+      if (last.stop_reason === 'refusal') throw new ClaudeRefusalError(result, last.stop_details);
+      if (last.stop_reason === 'pause_turn') throw new Error(`Claude paused the turn more than ${maxContinuations} times (model ${result.model})`);
       if (schema) result.data = JSON.parse(result.text);
       record(trace, label, model, started, result, null);
       return result;

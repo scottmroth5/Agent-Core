@@ -93,3 +93,58 @@ test('tx commits on success and rolls back on a throw', () => {
   assert.deepEqual(store.db.prepare('SELECT x FROM t').pluck().all(), [1]);
   store.close();
 });
+
+test('foreignKeys: false rebuilds a parent table without running its children\'s ON DELETE actions', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agent-core-'));
+  const path = join(dir, 'app.db');
+  const base = [
+    { id: '001', up: 'CREATE TABLE parent (id INTEGER PRIMARY KEY, key TEXT UNIQUE); CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER NOT NULL REFERENCES parent(id) ON DELETE CASCADE)' },
+    { id: '002', up: "INSERT INTO parent VALUES (1, 'a'), (2, 'b'); INSERT INTO child VALUES (10, 1), (11, 2)" },
+  ];
+  // The documented rebuild: the new table drops the UNIQUE on key and gains an owner column.
+  const rebuild = `CREATE TABLE parent_new (id INTEGER PRIMARY KEY, owner INTEGER NOT NULL, key TEXT, UNIQUE (owner, key));
+    INSERT INTO parent_new (id, owner, key) SELECT id, 1, key FROM parent;
+    DROP TABLE parent;
+    ALTER TABLE parent_new RENAME TO parent;`;
+  try {
+    openStore(path, { app: 'demo', migrations: base }).close();
+    const store = openStore(path, { app: 'demo', migrations: [...base, { id: '003', foreignKeys: false, up: rebuild }] });
+    assert.deepEqual(store.db.prepare('SELECT id FROM child ORDER BY id').pluck().all(), [10, 11], 'children survive the drop');
+    assert.equal(store.db.pragma('foreign_keys', { simple: true }), 1, 'enforcement is back on');
+    assert.throws(() => store.db.prepare('INSERT INTO child VALUES (12, 99)').run(), /FOREIGN KEY/);
+    store.db.prepare('DELETE FROM parent WHERE id = 1').run();
+    assert.deepEqual(store.db.prepare('SELECT id FROM child').pluck().all(), [11], 'the cascade still points at the rebuilt table');
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+  }
+});
+
+test('foreignKeys: false rolls back when the migration leaves a broken reference, and turns enforcement back on', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'agent-core-'));
+  const path = join(dir, 'app.db');
+  const base = [
+    { id: '001', up: 'CREATE TABLE parent (id INTEGER PRIMARY KEY); CREATE TABLE child (id INTEGER PRIMARY KEY, parent_id INTEGER REFERENCES parent(id))' },
+    { id: '002', up: 'INSERT INTO parent VALUES (1); INSERT INTO child VALUES (10, 1)' },
+  ];
+  try {
+    openStore(path, { app: 'demo', migrations: base }).close();
+    assert.throws(
+      () => openStore(path, { app: 'demo', migrations: [...base, { id: '003', foreignKeys: false, up: 'DELETE FROM parent' }] }),
+      /demo:003: 1 row\(s\) in child would break a foreign key; rolled back/,
+    );
+    const store = openStore(path, { app: 'demo', migrations: base });
+    assert.deepEqual(store.db.prepare('SELECT id FROM parent').pluck().all(), [1], 'nothing changed');
+    assert.equal(store.db.prepare("SELECT COUNT(*) FROM schema_migrations WHERE app = 'demo' AND id = '003'").pluck().get(), 0);
+    assert.equal(store.db.pragma('foreign_keys', { simple: true }), 1);
+    store.close();
+  } finally {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3 });
+  }
+});
+
+test('an ordinary migration keeps foreign keys on inside its transaction', () => {
+  let seen = null;
+  openStore(':memory:', { app: 'demo', migrations: [{ id: '001', up: (db) => { seen = db.pragma('foreign_keys', { simple: true }); } }] }).close();
+  assert.equal(seen, 1);
+});

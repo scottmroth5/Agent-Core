@@ -51,10 +51,16 @@ const CORE_MIGRATIONS = [
  * app's migrations under options.app. Each migration runs once, in array order,
  * inside its own transaction; applied IDs are recorded in schema_migrations.
  *
+ * A migration with foreignKeys: false runs with foreign key enforcement off, for SQLite's documented table rebuild
+ * (create the new table, copy, drop the old one, rename): with enforcement on, dropping a parent table would run its
+ * children's ON DELETE actions. It still runs in its own transaction, and before commit foreign_key_check must find
+ * no broken references and integrity_check must pass, or the whole migration rolls back. Enforcement is back on
+ * afterwards either way.
+ *
  * @param {string} path  file path, or ':memory:' for tests; parent folders are created
  * @param {object} [options]
  * @param {string} [options.app]  namespace for the app's migrations (required when migrations are given)
- * @param {Array<{id: string, up: string | ((db: import('better-sqlite3').Database) => void)}>} [options.migrations]
+ * @param {Array<{id: string, up: string | ((db: import('better-sqlite3').Database) => void), foreignKeys?: boolean}>} [options.migrations]
  * @returns {{ db: import('better-sqlite3').Database, tx: <T>(fn: () => T) => T, close: () => void }}
  */
 export function openStore(path, { app, migrations = [] } = {}) {
@@ -98,10 +104,31 @@ function migrate(db, app, migrations) {
   const mark = db.prepare('INSERT INTO schema_migrations (app, id, applied_at) VALUES (?, ?, ?)');
   for (const m of migrations) {
     if (applied.has(m.id)) continue;
-    db.transaction(() => {
+    const apply = () => {
       if (typeof m.up === 'function') m.up(db);
       else db.exec(m.up);
       mark.run(app, m.id, new Date().toISOString());
+    };
+    if (m.foreignKeys === false) withoutForeignKeys(db, `${app}:${m.id}`, apply);
+    else db.transaction(apply)();
+  }
+}
+
+// PRAGMA foreign_keys is ignored inside a transaction, so it is switched off before the migration's transaction starts.
+function withoutForeignKeys(db, name, apply) {
+  db.pragma('foreign_keys = OFF');
+  try {
+    db.transaction(() => {
+      apply();
+      const broken = db.pragma('foreign_key_check');
+      if (broken.length) {
+        const tables = [...new Set(broken.map((b) => b.table))].join(', ');
+        throw new Error(`migration ${name}: ${broken.length} row(s) in ${tables} would break a foreign key; rolled back`);
+      }
+      const check = db.pragma('integrity_check', { simple: true });
+      if (check !== 'ok') throw new Error(`migration ${name}: integrity check failed (${check}); rolled back`);
     })();
+  } finally {
+    db.pragma('foreign_keys = ON');
   }
 }

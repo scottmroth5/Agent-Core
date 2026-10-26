@@ -16,7 +16,9 @@ To test an unreleased change, run npm link ../Agent-Core in the consumer.
                      optional tools (server tools such as web search), streaming, betas/fallbacks, pause_turn resume
 /src/pricing.js      per-model USD rates, web search fee, and costFromUsage (internal); update when models or prices change
 /src/trace.js        createTracer: per-run call metadata, token and cost totals, persisted to the store when given
-/src/store.js        openStore: better-sqlite3, WAL, namespaced migrations (agent-core owns runs and run_calls)
+/src/store.js        openStore: better-sqlite3, WAL, namespaced migrations (agent-core owns runs and run_calls); a migration
+                     with foreignKeys: false runs with enforcement off for a table rebuild, then foreign_key_check and
+                     integrity_check must pass before it commits
 /src/index.js        public exports
 /test                node:test suites, synthetic data only
 /scripts/smoke.js    manual real-API check; needs ANTHROPIC_API_KEY

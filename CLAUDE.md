@@ -22,7 +22,7 @@ To test an unreleased change, run npm link ../Agent-Core in the consumer.
 /src/index.js        public exports
 /test                node:test suites, synthetic data only
 /scripts/smoke.js    manual real-API check; needs ANTHROPIC_API_KEY
-Planned for 0.3.0: /src/agentLoop.js (tool use loop with step limits), /src/tools.js (tool registry), /src/validators.js.
+Planned for 0.4.0: /src/agentLoop.js (tool use loop with step limits), /src/tools.js (tool registry), /src/validators.js.
 
 ## Commands
 npm test                                        run unit tests (no network, no API key)

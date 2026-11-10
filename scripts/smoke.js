@@ -9,7 +9,7 @@ if (!process.env.ANTHROPIC_API_KEY) {
   process.exit(1);
 }
 
-const run = createTracer().startRun('smoke');
+const run = await createTracer().startRun('smoke');
 const claude = createClaude();
 try {
   const result = await claude.send({
@@ -28,9 +28,9 @@ try {
   });
   console.log('data:', result.data);
   console.log('usage:', result.usage, 'cost USD:', result.costUsd);
-  run.finish(result.data?.answer === 42 ? 'ok' : 'unexpected-answer');
+  await run.finish(result.data?.answer === 42 ? 'ok' : 'unexpected-answer');
 } catch (err) {
-  run.finish('failed');
+  await run.finish('failed');
   console.error(err);
   process.exitCode = 1;
 }

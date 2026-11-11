@@ -136,10 +136,10 @@ export function createClaude({ apiKey, client, maxRetries = 3, timeoutMs } = {})
       if (last.stop_reason === 'refusal') throw new ClaudeRefusalError(result, last.stop_details);
       if (last.stop_reason === 'pause_turn') throw new Error(`Claude paused the turn more than ${maxContinuations} times (model ${result.model})`);
       if (schema) result.data = JSON.parse(result.text);
-      record(trace, label, model, started, result, null);
+      await record(trace, label, model, started, result, null);
       return result;
     } catch (err) {
-      record(trace, label, model, started, result, err);
+      await record(trace, label, model, started, result, err);
       throw err;
     }
   }
@@ -153,10 +153,11 @@ function errorName(err) {
   return err.constructor?.name || 'Error';
 }
 
-// Metadata only: never prompt or response text.
-function record(trace, label, model, started, result, err) {
+// Metadata only: never prompt or response text. recordCall may return a promise (a stored run); it is awaited so the
+// call's row is written before send settles.
+async function record(trace, label, model, started, result, err) {
   if (!trace) return;
-  trace.recordCall({
+  await trace.recordCall({
     label: label ?? null,
     model: result?.model ?? model,
     stopReason: result?.stopReason ?? null,

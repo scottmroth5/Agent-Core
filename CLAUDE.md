@@ -15,14 +15,16 @@ To test an unreleased change, run npm link ../Agent-Core in the consumer.
 /src/claude.js       createClaude: SDK client wrapper; cached system prompt, JSON schema output, stop_reason checks, cost;
                      optional tools (server tools such as web search), streaming, betas/fallbacks, pause_turn resume
 /src/pricing.js      per-model USD rates, web search fee, and costFromUsage (internal); update when models or prices change
-/src/trace.js        createTracer: per-run call metadata, token and cost totals, persisted to the store when given
+/src/trace.js        createTracer: per-run call metadata, token and cost totals, persisted to the store when given;
+                     startRun, recordCall, and finish return promises (0.4.0), and the store's db may be synchronous
+                     (openStore) or asynchronous (prepare(sql).run resolving to { lastInsertRowid } or { id })
 /src/store.js        openStore: better-sqlite3, WAL, namespaced migrations (agent-core owns runs and run_calls); a migration
                      with foreignKeys: false runs with enforcement off for a table rebuild, then foreign_key_check and
                      integrity_check must pass before it commits
 /src/index.js        public exports
 /test                node:test suites, synthetic data only
 /scripts/smoke.js    manual real-API check; needs ANTHROPIC_API_KEY
-Planned for 0.4.0: /src/agentLoop.js (tool use loop with step limits), /src/tools.js (tool registry), /src/validators.js.
+Planned for 0.5.0: /src/agentLoop.js (tool use loop with step limits), /src/tools.js (tool registry), /src/validators.js.
 
 ## Commands
 npm test                                        run unit tests (no network, no API key)

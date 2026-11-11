@@ -36,6 +36,20 @@ function fakeTrace() {
   return { calls, recordCall: (info) => calls.push(info) };
 }
 
+test('send waits for an asynchronous recordCall before it settles, on success and on error', async () => {
+  const written = [];
+  const trace = {
+    recordCall: async (info) => {
+      await new Promise((resolve) => setImmediate(resolve));
+      written.push(info.error?.name ?? 'ok');
+    },
+  };
+  await createClaude({ client: fakeClient(response()) }).send({ model: 'claude-haiku-4-5', maxTokens: 50, prompt: 'x', trace });
+  assert.deepEqual(written, ['ok']);
+  await assert.rejects(createClaude({ client: fakeClient(response({ stop_reason: 'max_tokens' })) }).send({ model: 'claude-haiku-4-5', maxTokens: 5, prompt: 'x', trace }), ClaudeTruncatedError);
+  assert.deepEqual(written, ['ok', 'ClaudeTruncatedError']);
+});
+
 test('sends the system prompt as one cached block and returns text, usage and cost', async () => {
   const client = fakeClient(response({ usage: { input_tokens: 100, output_tokens: 20, cache_read_input_tokens: 5000, cache_creation_input_tokens: 0 } }));
   const claude = createClaude({ client });

@@ -4,7 +4,11 @@
   "description": "Shared agent infrastructure for Job-Agent and Health-Review-Agent",
   "type": "module",
   "main": "src/index.js",
-  "exports": "./src/index.js",
+  "exports": {
+    ".": "./src/index.js",
+    "./claude": "./src/claude.js",
+    "./pricing": "./src/pricing.js"
+  },
   "files": [
     "src"
   ],

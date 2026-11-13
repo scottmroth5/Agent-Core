@@ -145,3 +145,107 @@ test('createClaude and a stored run work together without storing text', async (
   assert.equal(store.db.prepare('SELECT label FROM run_calls').pluck().get(), 'ping');
   store.close();
 });
+
+// A sink that records what the tracer hands it, optionally answering a tick later like an async data layer.
+function recordingSink({ id = 7, async = false } = {}) {
+  const events = [];
+  const later = (value) => (async ? new Promise((resolve) => setImmediate(() => resolve(value))) : value);
+  return {
+    events,
+    startRun: (run) => { events.push(['startRun', run]); return later(id); },
+    recordCall: (runId, c) => { events.push(['recordCall', runId, c]); return later(undefined); },
+    finishRun: (runId, f) => { events.push(['finishRun', runId, f]); return later(undefined); },
+  };
+}
+
+test('a sink receives the run, each call, and one finish as plain objects', async () => {
+  const sink = recordingSink();
+  const run = await createTracer({ sink, logger: quietLogger() }).startRun('discovery', { trigger: 'manual' });
+  assert.equal(run.id, 7);
+  await run.recordCall(call());
+  await run.recordCall(call({ costUsd: null, error: { name: 'RateLimitError', message: 'x' }, label: undefined }));
+  const totals = await run.finish('ok', { postings: 3 });
+
+  assert.deepEqual(sink.events.map(([kind]) => kind), ['startRun', 'recordCall', 'recordCall', 'finishRun']);
+  const [, started] = sink.events[0];
+  assert.equal(started.name, 'discovery');
+  assert.deepEqual(started.meta, { trigger: 'manual' });
+  assert.ok(!Number.isNaN(Date.parse(started.startedAt)));
+
+  const [, firstId, first] = sink.events[1];
+  assert.equal(firstId, 7);
+  assert.deepEqual({ ...first, createdAt: 'x' }, { ...call(), createdAt: 'x' });
+  const [, , second] = sink.events[2];
+  assert.equal(second.label, null);
+  assert.equal(second.costUsd, null);
+  assert.deepEqual(second.error, { name: 'RateLimitError', message: 'x' });
+
+  const [, finishId, finished] = sink.events[3];
+  assert.equal(finishId, 7);
+  assert.deepEqual(finished.summary, { postings: 3 });
+  assert.ok(!Number.isNaN(Date.parse(finished.finishedAt)));
+  assert.equal(finished.calls, 2);
+  assert.equal(finished.errors, 1);
+  assert.equal(finished.unpricedCalls, 1);
+  assert.deepEqual({ ...finished, finishedAt: undefined, summary: undefined }, { ...totals, finishedAt: undefined, summary: undefined });
+});
+
+test('an asynchronous sink is awaited at each step', async () => {
+  const sink = recordingSink({ id: 'run-1', async: true });
+  const run = await createTracer({ sink, logger: quietLogger() }).startRun('score');
+  assert.equal(run.id, 'run-1');
+  await run.recordCall(call());
+  assert.equal(sink.events.length, 2);
+  await run.finish();
+  assert.equal(sink.events.length, 3);
+  assert.equal(sink.events[2][2].summary, undefined);
+});
+
+test('a sink that keeps no id gives a null run id', async () => {
+  const run = await createTracer({ sink: recordingSink({ id: null }), logger: quietLogger() }).startRun('hunt');
+  assert.equal(run.id, null);
+});
+
+test('two finish calls made before either settles reach the sink once', async () => {
+  const sink = recordingSink({ async: true });
+  const run = await createTracer({ sink, logger: quietLogger() }).startRun('hunt');
+  const [first, second] = await Promise.all([run.finish('failed'), run.finish('ok')]);
+  assert.equal(second, first);
+  const finishes = sink.events.filter(([kind]) => kind === 'finishRun');
+  assert.equal(finishes.length, 1);
+  assert.equal(finishes[0][2].status, 'failed');
+});
+
+test('a sink error rejects the step that hit it', async () => {
+  const sink = { ...recordingSink(), recordCall: () => Promise.reject(new Error('disk full')) };
+  const run = await createTracer({ sink, logger: quietLogger() }).startRun('hunt');
+  await assert.rejects(run.recordCall(call()), /disk full/);
+});
+
+test('a sink and a store together, or an incomplete sink, are refused', () => {
+  const store = openStore(':memory:');
+  assert.throws(() => createTracer({ sink: recordingSink(), store }), /sink or a store, not both/);
+  assert.throws(() => createTracer({ sink: { startRun() {}, recordCall() {} } }), /startRun, recordCall, and finishRun/);
+  store.close();
+});
+
+test('createClaude through a sink hands over no prompt or response text', async () => {
+  const sink = recordingSink();
+  const client = {
+    messages: {
+      create: async () => ({
+        id: 'msg_1',
+        model: 'claude-haiku-4-5',
+        stop_reason: 'end_turn',
+        content: [{ type: 'text', text: 'SECRET-RESPONSE' }],
+        usage: { input_tokens: 10, output_tokens: 2 },
+      }),
+    },
+  };
+  const run = await createTracer({ sink, logger: quietLogger() }).startRun('smoke');
+  await createClaude({ client }).send({ model: 'claude-haiku-4-5', maxTokens: 20, prompt: 'SECRET-PROMPT', trace: run, label: 'ping' });
+  await run.finish();
+  const dump = JSON.stringify(sink.events);
+  assert.ok(!dump.includes('SECRET'), dump);
+  assert.equal(sink.events[1][2].label, 'ping');
+});
